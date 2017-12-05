@@ -715,7 +715,7 @@ static int chk_and_terminate_val(char *val)
 
 	p[0] = 0;
 
-	return 1; 
+	return 1;
 }
 
 static int assign_values(struct fpga_cfg_fpga_inst *inst,
@@ -1252,7 +1252,7 @@ err:
 
 #define FPGA_CFG_ATTR_RW(_name) \
 	struct fpga_cfg_attribute fpga_cfg_attr_##_name = \
-	__ATTR(_name, S_IRUGO | S_IWUSR , show_##_name, store_##_name)
+	__ATTR(_name, S_IRUGO | S_IWUSR, show_##_name, store_##_name)
 
 /*static FPGA_CFG_ATTR_RO(history);*/
 static FPGA_CFG_ATTR_RW(debug);
@@ -1693,7 +1693,7 @@ static int dummy_probe(struct platform_device *pdev)
 
 	/* Register a dummy fpga manager to get the fpga mgr class */
 	ret = fpga_mgr_register(dev, "dummy", &dummy_ops, NULL);
-        if (ret)
+	if (ret)
 		return ret;
 
 	mgr = fpga_mgr_get(dev);
