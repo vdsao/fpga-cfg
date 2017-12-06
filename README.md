@@ -8,8 +8,10 @@ Figure 1 shows a summary with simplified device connection diagram and low-level
 The driver uses various low-level drivers for Linux FPGA Manager framework (fpga-mgr). The required out-of-tree low-level fpga-mgr drivers can be found [here](https://lkml.org/lkml/2017/7/6/710 "submitted patch series"), (or as separate patches: [1](https://patchwork.kernel.org/patch/9828985/mbox "patch1"), [2](https://patchwork.kernel.org/patch/9828981/mbox "patch2"), [3](https://patchwork.kernel.org/patch/9828983/mbox "patch3")). Additional patch [4](https://patchwork.kernel.org/patch/9828565/mbox "patch4") for FPGA manager framework is required for *fpga-cfg* driver to build and work as expected. Other low-level drivers as *altera-cvp* and *altera-ps-spi* are in mainline kernel (enable CONFIG_FPGA_MGR_ALTERA_CVP and CONFIG_FPGA_MGR_ALTERA_PS_SPI options).
 
 <div class="figure">
-<center><img src="images/hw-drv-diag.png" alt="Figure 1"/>
-<center><p class="caption">Figure 1: FT232H, FPGA Devices and Drivers Relationship</p>
+<p align="center">
+<img src="images/hw-drv-diag.png" alt="Figure 1"/>
+</p>
+<p class="caption" align="center">Figure 1: FT232H, FPGA Devices and Drivers Relationship</p>
 </div>
 </b>  
 
@@ -34,8 +36,10 @@ The draft below suggests a way to rework and improve the low-level FPGA manager 
 Instead of MFD part as in previous version I intend to add an USB misc driver for our FPGA configuration adapters under drivers/usb/misc/. When probing for VID/PID assigned to FIFO-FPP adapter type, this driver will register CBUS GPIO controller, GPIO lookup tables for FIFO FPP device and will create a platform device for attaching the low-level FPGA manager driver for FIFO FPP interface. The attached FPGA manager driver will be similar to the *ftdi-fifo-fpp* driver and will reside in drivers/fpga/. When probing for VID/PID assigned to USB-SPI adapter type, the USB misc driver will register MPSSE GPIO controller, GPIO lookup tables for *altera-ps-spi* control/status GPIOs and will create platform device for attaching MPSSE SPI master controller driver. The SPI master controller platform driver will register MPSSE SPI bus with SPI slave device from *spi_board_info* struct in its platform data (in our case PS-SPI slave device for attaching *altera-ps-spi* driver). The intended location of this custom SPI master controller driver is drivers/spi/. Figure 2 below shows a simplified diagram when using reworked FT232H low-level configuration interface drivers.
 
 <div class="figure">
-<center><img src="images/hw-drv-diag-v2.png" alt="Figure 2"/>
-<center><p class="caption">Figure 2: FT232H, FPGA Devices and intended Drivers Relationship</p>
+<p align="center">
+<img src="images/hw-drv-diag-v2.png" alt="Figure 2"/>
+</p>
+<p class="caption" align="center">Figure 2: FT232H, FPGA Devices and intended Drivers Relationship</p>
 </div>
 </b>  
 
