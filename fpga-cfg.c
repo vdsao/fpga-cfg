@@ -19,6 +19,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -57,6 +58,7 @@ MODULE_PARM_DESC(fpgacfg_hist_len,
 
 static DEFINE_MUTEX(mgr_list_lock);
 static struct list_head mgr_devs = LIST_HEAD_INIT(mgr_devs);
+static struct list_head pci_dev_wait_list = LIST_HEAD_INIT(pci_dev_wait_list);
 static struct dentry *dbgfs_root;
 
 static struct class *fpga_mgr_class;
@@ -132,8 +134,13 @@ struct fpga_cfg_fpga_inst {
 	size_t idx;
 	struct kobject kobj_fpga_dir;
 	struct work_struct pci_rm_work;
-	wait_queue_head_t wait_queue;
+	wait_queue_head_t wq_bind;
+	wait_queue_head_t wq_unbind;
+	struct list_head link;
 
+	struct pci_dev *pci_dev;
+	const char *driver_to_bind;
+	bool cvp_bound;
 	int bus;
 	int dev;
 	int func;
@@ -412,11 +419,9 @@ static int fpga_cfg_mgr_ncb(struct notifier_block *nb, unsigned long val,
 
 	switch (val) {
 	case FPGA_MGR_ADD:
-		pr_debug("new mgr %p: %s\n", mgr, mgr ? mgr->name : NULL);
 		fpga_cfg_create_inst(mgr);
 		break;
 	case FPGA_MGR_REMOVE:
-		pr_debug("mgr gone %p: %s\n", mgr, mgr ? mgr->name : NULL);
 		fpga_cfg_remove_inst(mgr);
 		break;
 	default:
@@ -441,11 +446,13 @@ static struct pci_dev *fpga_cfg_find_cvp_dev(struct fpga_cfg_fpga_inst *inst)
 	devfn = PCI_DEVFN(inst->dev, inst->func);
 
 	if (inst->debug)
-		dev_dbg(dev, "find bus 0x%x, devfn %d\n", inst->bus, devfn);
+		dev_dbg(dev, "find bus %02x, devfn %d\n", inst->bus, devfn);
 
 	pdev = pci_get_domain_bus_and_slot(0, inst->bus, devfn);
 	if (!pdev) {
-		dev_err(dev, "Can't find CvP/PR PCIe device '%s'\n", inst->bdf);
+		if (inst->debug)
+			dev_dbg(dev, "Can't find CvP/PR PCIe device '%s'\n",
+				inst->bdf);
 		return NULL;
 	}
 
@@ -912,7 +919,8 @@ static int assign_values(struct fpga_cfg_fpga_inst *inst,
 			ret = sscanf(val, "/lib/firmware/%s", dst_sub);
 			if (ret == 1) {
 				if (inst->debug)
-					pr_debug("base name '%s'\n", dst_sub);
+					dev_dbg(dev, "base name '%s'\n",
+						dst_sub);
 				return 0;
 			}
 			dev_err(dev,
@@ -1011,18 +1019,8 @@ static int fpga_cfg_op_log(struct fpga_cfg_fpga_inst *inst,
 	return ret;
 }
 
-static void bus_rescan_full(void)
-{
-	struct pci_bus *b = NULL;
-
-	pci_lock_rescan_remove();
-	while ((b = pci_find_next_bus(b)) != NULL)
-		pci_rescan_bus(b);
-	pci_unlock_rescan_remove();
-}
-
-static void bus_rescan(struct fpga_cfg_fpga_inst *inst,
-		       struct pci_bus *bus, char *driver)
+static void pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
+			   struct pci_bus *bus, char *driver)
 {
 	struct pci_dev *pdev;
 	unsigned int max;
@@ -1048,6 +1046,118 @@ static void bus_rescan(struct fpga_cfg_fpga_inst *inst,
 		pci_bus_add_device(pdev);
 	}
 	pci_unlock_rescan_remove();
+	pdev = NULL;
+}
+
+static int pci_device_driver_bind(struct pci_dev *pdev, const char *drv_name)
+{
+	int ret;
+
+	if (!pdev)
+		return -ENODEV;
+
+	if (drv_name) {
+		if (pdev->driver_override) {
+			if (strcmp(pdev->driver_override, drv_name)) {
+				kfree(pdev->driver_override);
+				pdev->driver_override = kstrdup(drv_name,
+								GFP_KERNEL);
+			}
+		} else
+			pdev->driver_override = kstrdup(drv_name, GFP_KERNEL);
+	} else {
+		if (pdev->driver_override) {
+			kfree(pdev->driver_override);
+			pdev->driver_override = NULL;
+		}
+	}
+
+	ret = device_attach(&pdev->dev);
+
+	return ret < 0 ? ret : 0;
+}
+
+static void pci_device_driver_unbind(struct device *dev)
+{
+	if (!dev)
+		return;
+
+	if (dev->parent)
+		device_lock(dev->parent);
+
+	device_release_driver(dev);
+
+	if (dev->parent)
+		device_unlock(dev->parent);
+
+	/*put_device(dev);*/
+}
+
+static int pci_bus_event_notify(struct notifier_block *nb,
+				unsigned long action, void *data)
+{
+	struct fpga_cfg_fpga_inst *inst, *tmp_inst;
+	struct device *dev = data;
+	struct pci_dev *pdev = to_pci_dev(dev);
+	bool dev_waiting = false;
+
+	switch (action) {
+	case BUS_NOTIFY_BIND_DRIVER:
+	case BUS_NOTIFY_BOUND_DRIVER:
+	case BUS_NOTIFY_UNBOUND_DRIVER:
+		list_for_each_entry_safe(inst, tmp_inst,
+					 &pci_dev_wait_list, link) {
+			if (pdev->bus->number == inst->bus &&
+			    pdev->devfn == PCI_DEVFN(inst->dev, inst->func)) {
+				if (inst->debug)
+					dev_dbg(dev, "%s: %02x:%02x.%d\n",
+						__func__, inst->bus,
+						inst->dev, inst->func);
+				dev_waiting = true;
+				break;
+			}
+		}
+		break;
+	}
+
+	switch (action) {
+	case BUS_NOTIFY_BIND_DRIVER:
+		if (dev_waiting && inst->driver_to_bind) {
+			if (pdev->driver_override)
+				kfree(pdev->driver_override);
+			pdev->driver_override = kstrdup(inst->driver_to_bind,
+							GFP_KERNEL);
+		}
+		break;
+	case BUS_NOTIFY_BOUND_DRIVER:
+		if (dev_waiting) {
+			list_del_init(&inst->link);
+			inst->cvp_bound = true;
+			inst->pci_dev = pdev;
+			wake_up(&inst->wq_bind);
+		}
+		break;
+	case BUS_NOTIFY_UNBOUND_DRIVER:
+		if (dev_waiting) {
+			list_del_init(&inst->link);
+			inst->cvp_bound = false;
+			wake_up(&inst->wq_unbind);
+		}
+		break;
+	}
+
+	return 0;
+}
+
+static struct notifier_block pci_bus_notifier = {
+	.notifier_call = pci_bus_event_notify,
+};
+
+static inline bool inst_is_fpp(struct fpga_cfg_fpga_inst *inst)
+{
+	if (inst->cfg_op1 == FPP_RING_MGR)
+		return true;
+	return false;
 }
 
 static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
@@ -1057,6 +1167,7 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 	struct fpga_manager *mgr;
 	struct cfg_desc *desc;
 	struct pci_dev *pdev;
+	struct pci_bus *bus;
 	struct device *dev;
 	const char *start, *end;
 	struct fpga_image_info info;
@@ -1115,25 +1226,40 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		} else
 			return -ENODEV;
 
-		if (inst->debug)
-			dev_dbg(dev, "FPP/SPI step start\n");
-
 		pdev = fpga_cfg_find_cvp_dev(inst);
 		if (pdev) {
-			/* Unbind and remove the PCIe FPGA device first */
-			pci_lock_rescan_remove();
-			pci_dev_get(pdev);
-			pci_stop_and_remove_bus_device(pdev);
-			pci_dev_put(pdev);
-			pci_unlock_rescan_remove();
+			if (pdev->driver) {
+				/* Unbind driver from FPGA device first */
+				list_add_tail(&inst->link, &pci_dev_wait_list);
+				pci_device_driver_unbind(&pdev->dev);
+
+				ret = wait_event_timeout(inst->wq_unbind,
+							 !pdev->driver,
+							 msecs_to_jiffies(500));
+				if (!ret) {
+					dev_warn(dev, "PCI device unbind timeout\n");
+				}
+			}
+		} else {
+			if (inst->debug)
+				dev_dbg(dev,
+					"No FPGA yet. Loading periph. image\n");
 		}
 
-		ret = fpga_cfg_modprobe(inst->fpga_drv, 1, true, NULL);
+		/* Remove fpga driver module */
+		ret = fpga_cfg_modprobe(inst->fpga_drv, UMH_WAIT_PROC, true, NULL);
 		if (ret < 0)
 			dev_warn(dev, "Failed to unload module '%s'\n",
 				 inst->fpga_drv);
 
-		msleep(10);
+		/*
+		 * There is no FPGA user anymore, now we can start loading
+		 * the periph. image implementing PCIe CvP device.
+		 */
+		inst->pci_dev = NULL;
+		inst->cvp_bound = false;
+		inst->driver_to_bind = "altera-cvp";
+		list_add_tail(&inst->link, &pci_dev_wait_list);
 
 		if (inst->cfg_op1 == SPI_RING_MGR) {
 			if (inst->bs_lsb_first)
@@ -1142,23 +1268,51 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 				info.flags &= ~FPGA_MGR_BITSTREAM_LSB_FIRST;
 		}
 
+		if (inst->debug)
+			dev_dbg(dev, "%s cfg step start\n",
+				inst_is_fpp(inst) ? "FPP" : "SPI");
+
 		/* Load ring image now */
 		ret = fpga_mgr_firmware_load(desc->mgr, &info, desc->firmware);
 		if (ret < 0) {
 			dev_warn(dev, "%s fpga_mgr failed: %d\n",
-				 inst->fpp.mgr ? "FPP" : "SPI", ret);
+				 inst_is_fpp(inst) ? "FPP" : "SPI", ret);
+			list_del_init(&inst->link);
 			goto err;
 		}
 
 		inst->cfg_done = true;
 		inst->cfg_seq_num += 1;
 		fpga_cfg_op_log(inst, desc);
-		if (inst->debug)
-			dev_dbg(dev, "FPP/SPI step done\n");
+
+		if (inst->debug) {
+			dev_dbg(dev, "%s cfg step done\n",
+				inst_is_fpp(inst) ? "FPP" : "SPI");
+
+			dev_dbg(dev, "Waiting for PCIe device hotplug\n");
+		}
+
+		ret = wait_event_timeout(inst->wq_bind, inst->cvp_bound,
+					 msecs_to_jiffies(1000));
+		if (ret) {
+			if (inst->debug)
+				dev_dbg(dev, "PCIe CvP driver bound\n");
+		} else {
+			if (inst->debug)
+				dev_warn(dev, "PCIe device link up timeout\n");
+			ret = pci_device_driver_bind(pdev, "altera-cvp");
+			if (ret) {
+				dev_err(dev, "Failed to bind CvP driver %d\n",
+					ret);
+				goto err;
+			}
+		}
 	}
 
 	if (inst->cfg_op1 == SPI_MGR) {
 		desc = &inst->spi;
+		if (inst->debug)
+			dev_dbg(dev, "SPI cfg step start\n");
 		ret = fpga_mgr_firmware_load(desc->mgr, &info, desc->firmware);
 		if (ret < 0) {
 			dev_warn(dev, "SPI fpga_mgr failed: %d\n", ret);
@@ -1169,14 +1323,14 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		inst->cfg_seq_num += 1;
 		fpga_cfg_op_log(inst, desc);
 		if (inst->debug)
-			dev_dbg(dev, "SPI cfg. step done\n");
+			dev_dbg(dev, "SPI cfg step done\n");
 		sysfs_notify(&inst->kobj_fpga_dir, NULL, "status");
 		return size;
 	}
 
 	if (inst->cfg_op1 == PR_MGR) {
 		if (inst->debug)
-			dev_dbg(dev, "PR step start\n");
+			dev_dbg(dev, "PR cfg step start\n");
 		pdev = fpga_cfg_find_cvp_dev(inst);
 		if (!pdev) {
 			return -ENODEV;
@@ -1208,7 +1362,7 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		inst->pr.mgr = NULL;
 		inst->cfg_done = true;
 		if (inst->debug)
-			dev_dbg(dev, "PR step done\n");
+			dev_dbg(dev, "PR cfg step done\n");
 
 		sysfs_remove_file_from_group(&inst->kobj_fpga_dir,
 					&inst->pr_image_attr.attr, "pr");
@@ -1233,41 +1387,17 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		return size;
 	}
 
-	if (inst->debug)
-		dev_dbg(dev, "reattach CvP device...\n");
-
-	pdev = fpga_cfg_find_cvp_dev(inst);
-	if (pdev) {
-		/* Unbind and remove the PCIe FPGA device first */
-		pci_lock_rescan_remove();
-		pci_dev_get(pdev);
-		pci_stop_and_remove_bus_device(pdev);
-		pci_dev_put(pdev);
-		pci_unlock_rescan_remove();
-	}
-	msleep(300);
-
-	if (inst->debug)
-		dev_dbg(dev, "rescan 1\n");
-
-	if (pdev)
-		bus_rescan(inst, pdev->bus, "altera-cvp");
-	else
-		bus_rescan_full();
-
-	msleep(50);
-
-	if (inst->debug)
-		dev_dbg(dev, "rescan 1 done\n");
-
 	if (inst->cfg_op2 == CVP_MGR) {
 		inst->cfg_done = false;
-		msleep(200);
-		pdev = fpga_cfg_find_cvp_dev(inst);
+		inst->driver_to_bind = NULL;
+		pdev = inst->pci_dev;
 		if (!pdev) {
-			dev_dbg(dev, "PCIe FPGA dev not found.\n");
-			ret = -ENODEV;
-			goto err;
+			pdev = fpga_cfg_find_cvp_dev(inst);
+			if (!pdev) {
+				dev_dbg(dev, "PCIe FPGA dev not found.\n");
+				ret = -ENODEV;
+				goto err;
+			}
 		}
 
 		inst->cvp.mgr_dev = &pdev->dev;
@@ -1279,7 +1409,7 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 			return ret;
 		}
 		if (inst->debug) {
-			dev_info(dev, "CvP step start\n");
+			dev_info(dev, "CvP cfg step start\n");
 			dev_info(dev, "Using CvP manager: '%s'\n", mgr->name);
 		}
 
@@ -1297,40 +1427,47 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		fpga_mgr_put(mgr);
 		inst->cvp.mgr = NULL;
 		if (inst->debug)
-			dev_info(dev, "CvP step done\n");
+			dev_info(dev, "CvP cfg step done\n");
+
+#if 0
+		/* Shouldn't be needed with working hotplug */
+		if (pdev->vendor == 0x1172 &&
+		    (pdev->device == 0xe003 || pdev->device == 0xe001)) {
+			if (inst->debug)
+				dev_dbg(dev, "Reattach CvP device\n");
+			bus = pdev->bus;
+			/* Unbind and remove the PCIe FPGA device first */
+			pci_lock_rescan_remove();
+			pci_dev_get(pdev);
+			pci_stop_and_remove_bus_device(pdev);
+			pci_dev_put(pdev);
+			pci_unlock_rescan_remove();
+
+			if (inst->debug)
+				dev_dbg(dev, "PCI bus rescan\n");
+			pci_bus_rescan(inst, bus, inst->fpga_drv);
+			if (inst->debug) {
+				dev_dbg(dev, "PCI bus rescan done\n");
+				dev_dbg(dev, "CvP device reattach done\n");
+			}
+		} else
+#endif
+		{
+			/* Detach CvP driver and bind to mfd driver */
+			pci_device_driver_unbind(&pdev->dev);
+
+			/* Load fpga driver module with custom parameters */
+			ret = fpga_cfg_modprobe(inst->fpga_drv, UMH_WAIT_PROC,
+						false, inst->fpga_drv_args);
+			if (ret < 0)
+				dev_warn(dev, "Failed to load module '%s %s': err %d\n",
+					 inst->fpga_drv, inst->fpga_drv_args, ret);
+
+			ret = pci_device_driver_bind(pdev, inst->fpga_drv);
+			if (ret)
+				dev_err(dev, "PCIe dev bind error %d\n", ret);
+		}
 	}
-
-	if (inst->debug)
-		dev_dbg(dev, "reattach CvP device\n");
-
-	pdev = fpga_cfg_find_cvp_dev(inst);
-	if (pdev) {
-		/* Unbind and remove the PCIe FPGA device first */
-		pci_lock_rescan_remove();
-		pci_dev_get(pdev);
-		pci_stop_and_remove_bus_device(pdev);
-		pci_dev_put(pdev);
-		pci_unlock_rescan_remove();
-	}
-
-	msleep(200);
-
-	ret = fpga_cfg_modprobe(inst->fpga_drv, 1, false, inst->fpga_drv_args);
-	if (ret < 0)
-		dev_warn(dev, "Failed to load module '%s %s'\n",
-			 inst->fpga_drv, inst->fpga_drv_args);
-
-	if (inst->debug)
-		dev_dbg(dev, "rescan 2\n");
-
-	if (pdev) {
-		bus_rescan(inst, pdev->bus, inst->fpga_drv);
-		/*bus_rescan(bus, "fpga_enable");*/
-	} else
-		bus_rescan_full();
-
-	if (inst->debug)
-		dev_dbg(dev, "CvP device reattach done\n");
 
 	sysfs_notify(&inst->kobj_fpga_dir, NULL, "status");
 
@@ -1582,7 +1719,8 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 
 	mutex_init(&priv->fpga.history_lock);
 	INIT_LIST_HEAD(&priv->fpga.history_list);
-	init_waitqueue_head(&priv->fpga.wait_queue);
+	init_waitqueue_head(&priv->fpga.wq_bind);
+	init_waitqueue_head(&priv->fpga.wq_unbind);
 	init_waitqueue_head(&priv->fpga.hist_queue);
 
 	ret = kobject_init_and_add(&priv->fpga.kobj_fpga_dir,
@@ -1762,6 +1900,22 @@ static int fpga_cfg_dev_probe(struct platform_device *pdev)
 {
 	int ret;
 
+	ret = request_module("fpga-mgr");
+	if (ret)
+		pr_debug("Can't load fpga-mgr: %d\n", ret);
+
+	ret = request_module("altera-ps-spi");
+	if (ret)
+		pr_debug("Can't load altera-ps-spi: %d\n", ret);
+
+	ret = request_module("altera-cvp");
+	if (ret)
+		pr_debug("Can't load altera-cvp: %d\n", ret);
+
+	ret = request_module("fpga-mfd");
+	if (ret < 0)
+		pr_debug("Can't load fpga-mfd: %d\n", ret);
+
 	if (fpgacfg_hist_len < FPGA_CFG_HISTORY_ENTRIES_MIN) {
 		fpgacfg_hist_len = FPGA_CFG_HISTORY_ENTRIES_MIN;
 		pr_warn("fpga-cfg: Using min. fpgacfg_hist_len %d\n",
@@ -1785,6 +1939,8 @@ static int fpga_cfg_dev_probe(struct platform_device *pdev)
 	if (ret)
 		goto err;
 
+	bus_register_notifier(&pci_bus_type, &pci_bus_notifier);
+
 	fpga_mgr_register_mgr_notifier(&fpga_mgr_notifier);
 	return 0;
 err:
@@ -1795,6 +1951,8 @@ err:
 
 static int fpga_cfg_dev_remove(struct platform_device *pdev)
 {
+	bus_unregister_notifier(&pci_bus_type, &pci_bus_notifier);
+
 	fpga_mgr_unregister_mgr_notifier(&fpga_mgr_notifier);
 	fpga_cfg_detach_mgrs(fpga_mgr_class);
 
