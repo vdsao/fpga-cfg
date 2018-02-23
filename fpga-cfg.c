@@ -38,8 +38,13 @@
 
 #define FPGA_DRV_STRING		"fpga_cfg"
 #define FPP_RING_MGR_NAME	"ftdi-fpp-fpga-mgr"
-#define SPI_RING_MGR_NAME	"altera-ps-spi"
 #define SPI_XLNX_MGR_NAME	"Xilinx Slave Serial FPGA Manager"
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4, 11, 0)
+#define SPI_RING_MGR_NAME      "Altera Cyclone PS SPI FPGA Manager"
+#else
+#define SPI_RING_MGR_NAME	"altera-ps-spi"
+#endif
 
 #define FPGA_CFG_HISTORY_ENTRIES_MIN	500
 #define FPGA_CFG_HISTORY_ENTRIES_MAX	10000
