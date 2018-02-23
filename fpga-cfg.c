@@ -886,9 +886,8 @@ static int assign_values(struct fpga_cfg_fpga_inst *inst,
 		case CFG_USB_ID:
 			if (strncmp(val, inst->usb_dev_id,
 				    sizeof(inst->usb_dev_id))) {
-				dev_err(dev, "FPP usb id '%s', expected '%s'\n",
-					val, inst->usb_dev_id);
-				return -EINVAL;
+				dev_warn(dev, "FPP usb id '%s', expected '%s'\n",
+					 val, inst->usb_dev_id);
 			}
 			if (inst->debug)
 				dev_dbg(dev, "Using FPP dev '%s'\n", val);
