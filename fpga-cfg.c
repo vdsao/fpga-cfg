@@ -334,6 +334,9 @@ static int fpga_cfg_create_inst(struct fpga_manager *mgr)
 	mgr_type = NOP_MGR;
 	found = false;
 
+	if (!strncmp("Altera CvP", mgr->name, 10))
+		return 0; /* No ring mgr, no config instance */
+
 	for (i = 0; fpga_cfg_mgr_tbl[i].mgr_name; i++) {
 		name = fpga_cfg_mgr_tbl[i].mgr_name;
 		len = strlen(name);
