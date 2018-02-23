@@ -79,6 +79,8 @@ enum fpga_cfg_mgr_type {
 	CFG_USB_ID,
 	CFG_TYPE,
 	CFG_BS_LSB,
+	FPGA_DRV,
+	FPGA_DRV_ARGS,
 };
 
 struct fpga_cfg_mgr {
@@ -134,6 +136,8 @@ struct fpga_cfg_fpga_inst {
 	char bdf[16];
 	char type[16];
 	char usb_dev_id[16];
+	char fpga_drv[48];
+	char fpga_drv_args[2048];
 	int bs_lsb_first;
 	enum fpga_cfg_mgr_type mgr_type;
 	struct cfg_desc fpp;
@@ -178,35 +182,110 @@ struct fpga_cfg_platform_data {
 	enum fpga_cfg_mgr_type mgr_type;
 };
 
-static enum fpga_mgr_states dummy_state(struct fpga_manager *mgr)
-{
-	return 0;
-}
-
-static int dummy_init(struct fpga_manager *mgr,
-		      struct fpga_image_info *info,
-		      const char *buf, size_t count)
-{
-	return 0;
-}
-
-static int dummy_write(struct fpga_manager *mgr, const char *buf,
-		       size_t count)
-{
-	return 0;
-}
-static int dummy_complete(struct fpga_manager *mgr,
-			  struct fpga_image_info *info)
-{
-	return 0;
-}
-
-static const struct fpga_manager_ops dummy_ops = {
-	.state          = dummy_state,
-	.write_init     = dummy_init,
-	.write          = dummy_write,
-	.write_complete = dummy_complete,
+struct modprobe_data {
+	char *module_name;
+	char *module_args;
+	bool remove;
 };
+
+static void fpga_cfg_modprobe_cleanup(struct subprocess_info *info)
+{
+	struct modprobe_data *data = info->data;
+
+	if (data) {
+		if (!data->remove)
+			kfree(data->module_args);
+		kfree(data->module_name);
+	}
+	kfree(info->argv);
+}
+
+#define MAX_MOD_ARGS	32
+
+char modprobe_path[] = "/sbin/modprobe";
+
+static int fpga_cfg_modprobe(char *module_name, int wait,
+			     bool remove, char *module_args)
+{
+	struct subprocess_info *info;
+	struct modprobe_data *data;
+	char **argv;
+	char *p;
+	int argc = 0;
+	static char *envp[] = {
+		"HOME=/",
+		"PATH=/sbin:/usr/sbin:/bin:/usr/bin",
+		"TERM=linux",
+		NULL
+	};
+
+
+	argv = kmalloc(sizeof(char *[MAX_MOD_ARGS]), GFP_KERNEL);
+	if (!argv)
+		goto out;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		goto free_argv;
+
+	data->module_name = kstrdup(module_name, GFP_KERNEL);
+	if (!data->module_name)
+		goto free_data;
+
+	data->remove = remove;
+
+	argv[0] = modprobe_path;
+	argv[1] = "-q";
+
+	if (remove) {
+		argv[2] = "-r";
+		argv[3] = "--";
+		argv[4] = data->module_name;
+		argv[5] = NULL;
+	} else {
+		argv[2] = "--";
+		argv[3] = data->module_name;
+		argv[4] = NULL;
+
+		if (module_args) {
+			data->module_args = kstrdup(module_args, GFP_KERNEL);
+			if (!data->module_args)
+				goto free_module_name;
+
+			argc = 0;
+			while ((p = strsep(&data->module_args, ",")) != NULL) {
+				if (!*p)
+					continue;
+				argv[4 + argc] = p;
+				argc++;
+				if (argc == (MAX_MOD_ARGS - 4)) {
+					argv[4 + argc] = NULL;
+					break;
+				}
+			}
+		}
+	}
+
+	info = call_usermodehelper_setup(modprobe_path, argv, envp,
+					 GFP_KERNEL, NULL,
+					 fpga_cfg_modprobe_cleanup, data);
+	if (!info) {
+		if (!remove)
+			kfree(data->module_args);
+		goto free_module_name;
+	}
+
+	return call_usermodehelper_exec(info, wait | UMH_KILLABLE);
+
+free_module_name:
+	kfree(data->module_name);
+free_data:
+	kfree(data);
+free_argv:
+	kfree(argv);
+out:
+	return -ENOMEM;
+}
 
 static int fpga_cfg_add_new_mgr(struct platform_device *pdev,
 				struct fpga_manager *mgr)
@@ -269,6 +348,7 @@ static int fpga_cfg_create_inst(struct fpga_manager *mgr)
 	for (i = 0; fpga_cfg_mgr_tbl[i].mgr_name; i++) {
 		name = fpga_cfg_mgr_tbl[i].mgr_name;
 		len = strlen(name);
+		pr_debug("LOOKING for [ %s ] in '%s'\n", mgr->name, fpga_cfg_mgr_tbl[i].mgr_name);
 		if (!strncmp(name, mgr->name, len)) {
 			mgr_type = fpga_cfg_mgr_tbl[i].mgr_type;
 			found = true;
@@ -277,6 +357,7 @@ static int fpga_cfg_create_inst(struct fpga_manager *mgr)
 	}
 
 	if (!found) {
+		pr_debug("NO RING MGR found\n");
 		/*
 		 * No ring fpga manager or no single fpga manager found,
 		 * so won't create the configuration interface device
@@ -307,6 +388,7 @@ static void fpga_cfg_remove_inst(struct fpga_manager *mgr)
 {
 	struct fpga_cfg_device *cfg, *tmp_cfg;
 
+	pr_debug("%s: ##### remove mgr %s\n", __func__, mgr->name);
 	mutex_lock(&mgr_list_lock);
 	list_for_each_entry_safe(cfg, tmp_cfg, &mgr_devs, list) {
 		if (cfg->mgr == mgr) {
@@ -325,6 +407,12 @@ static int fpga_cfg_mgr_ncb(struct notifier_block *nb, unsigned long val,
 {
 	struct fpga_manager *mgr = priv;
 	int result = NOTIFY_OK;
+
+	if (!mgr)
+		return NOTIFY_BAD;
+
+	if (!fpga_mgr_class)
+		fpga_mgr_class = mgr->dev.class;
 
 	switch (val) {
 	case FPGA_MGR_ADD:
@@ -673,6 +761,8 @@ struct key_type_tbl fpga_cfg_key_tbl[] = {
 	{ SPI_META,	"spi-image-meta" },
 	{ CVP_META,	"cvp-image-meta" },
 	{ PR_META,	"part-reconf-image-meta" },
+	{ FPGA_DRV,	"mfd-driver" },
+	{ FPGA_DRV_ARGS, "mfd-driver-param" },
 };
 
 static void reset_key_tbl_search(void)
@@ -820,6 +910,21 @@ static int assign_values(struct fpga_cfg_fpga_inst *inst,
 				dev_dbg(dev, "Bitstream LSB first flag '%d'\n",
 					inst->bs_lsb_first);
 			}
+			return 0;
+		case FPGA_DRV:
+			if (sscanf(val, "%s", inst->fpga_drv) != 1) {
+				dev_err(dev, "Invalid 'mfd-driver': '%s'\n", val);
+				return -EINVAL;
+			}
+			if (inst->debug)
+				dev_dbg(dev, "Using mfd-driver: '%s'\n", inst->fpga_drv);
+			return 0;
+		case FPGA_DRV_ARGS:
+			strncpy(inst->fpga_drv_args, val,
+				sizeof(inst->fpga_drv_args));
+			if (inst->debug)
+				dev_dbg(dev, "Using mfd-driver-param: '%s'\n",
+					inst->fpga_drv_args);
 			return 0;
 		default:
 			return 0;
@@ -1044,6 +1149,11 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 			pci_unlock_rescan_remove();
 		}
 
+		ret = fpga_cfg_modprobe(inst->fpga_drv, 1, true, NULL);
+		if (ret < 0)
+			dev_warn(dev, "Failed to unload module '%s'\n",
+				 inst->fpga_drv);
+
 		msleep(10);
 
 		if (inst->cfg_op1 == SPI_RING_MGR) {
@@ -1226,11 +1336,16 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 
 	msleep(200);
 
+	ret = fpga_cfg_modprobe(inst->fpga_drv, 1, false, inst->fpga_drv_args);
+	if (ret < 0)
+		dev_warn(dev, "Failed to load module '%s %s'\n",
+			 inst->fpga_drv, inst->fpga_drv_args);
+
 	if (inst->debug)
 		dev_dbg(dev, "rescan 2\n");
 
 	if (pdev) {
-		bus_rescan(inst, pdev->bus, "fpga_mfd");
+		bus_rescan(inst, pdev->bus, inst->fpga_drv);
 		/*bus_rescan(bus, "fpga_enable");*/
 	} else
 		bus_rescan_full();
@@ -1684,47 +1799,8 @@ static struct platform_driver fpga_cfg_driver = {
 	.remove = fpga_cfg_remove,
 };
 
-/* Platform driver for getting fpga manger class */
-static int dummy_probe(struct platform_device *pdev)
+static int fpga_cfg_dev_probe(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-	struct fpga_manager *mgr;
-	int ret;
-
-	/* Register a dummy fpga manager to get the fpga mgr class */
-	ret = fpga_mgr_register(dev, "dummy", &dummy_ops, NULL);
-	if (ret)
-		return ret;
-
-	mgr = fpga_mgr_get(dev);
-	if (IS_ERR(mgr)) {
-		dev_err(dev, "Can't get dummy fpga mgr: %ld\n", PTR_ERR(mgr));
-		fpga_mgr_unregister(dev);
-		return PTR_ERR(mgr);
-	}
-
-	fpga_mgr_class = mgr->dev.class;
-	fpga_mgr_put(mgr);
-	fpga_mgr_unregister(dev);
-	return 0;
-}
-
-static int dummy_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
-static struct platform_driver dummy_driver = {
-	.driver = {
-		.name   = "dummy-dev",
-	},
-	.probe = dummy_probe,
-	.remove = dummy_remove,
-};
-
-static int __init fpga_cfg_init(void)
-{
-	struct platform_device *dummy;
 	int ret;
 
 	if (fpgacfg_hist_len < FPGA_CFG_HISTORY_ENTRIES_MIN) {
@@ -1732,6 +1808,7 @@ static int __init fpga_cfg_init(void)
 		pr_warn("fpga-cfg: Using min. fpgacfg_hist_len %d\n",
 			fpgacfg_hist_len);
 	}
+
 	if (fpgacfg_hist_len > FPGA_CFG_HISTORY_ENTRIES_MAX) {
 		fpgacfg_hist_len = FPGA_CFG_HISTORY_ENTRIES_MAX;
 		pr_warn("fpga-cfg: Using max. fpgacfg_hist_len %d\n",
@@ -1745,52 +1822,26 @@ static int __init fpga_cfg_init(void)
 		return -ENOENT;
 	}
 
-	/*
-	 * We need a registered platform device to be able to register
-	 * a dummy fpga manager for finding the fpga manager class
-	 */
-	dummy = platform_device_register_simple("dummy-dev",
-						PLATFORM_DEVID_NONE, NULL, 0);
-	if (IS_ERR(dummy)) {
-		pr_err("Can't register dummy-dev device: %ld\n",
-		       PTR_ERR(dummy));
-		ret = PTR_ERR(dummy);
-		goto err;
-	}
-
-	ret = platform_driver_register(&dummy_driver);
-	if (ret)
-		goto err;
-
-	platform_device_unregister(dummy);
-	platform_driver_unregister(&dummy_driver);
-
-	/* Check if fpga mgr class found while probing "dummy-dev"? */
-	if (!fpga_mgr_class) {
-		pr_err("Missing fpga mgr class...\n");
-		return -ENODEV;
-	}
-
-	fpga_cfg_attach_mgrs(fpga_mgr_class);
-	fpga_mgr_register_mgr_notifier(&fpga_mgr_notifier);
-
 	ret = platform_driver_register(&fpga_cfg_driver);
 	if (ret)
 		goto err;
 
+	fpga_mgr_register_mgr_notifier(&fpga_mgr_notifier);
 	return 0;
 err:
+	pr_err("%s: err: %d\n", __func__, ret);
 	debugfs_remove_recursive(dbgfs_root);
 	return ret;
 }
 
-static void __exit fpga_cfg_exit(void)
+static int fpga_cfg_dev_remove(struct platform_device *pdev)
 {
 	fpga_mgr_unregister_mgr_notifier(&fpga_mgr_notifier);
 	fpga_cfg_detach_mgrs(fpga_mgr_class);
 
 	fpga_cfg_cleanup_mgrs();
 	platform_driver_unregister(&fpga_cfg_driver);
+	fpga_mgr_class = NULL;
 
 	ida_destroy(&fpga_cfg_ida);
 
@@ -1798,12 +1849,20 @@ static void __exit fpga_cfg_exit(void)
 		debugfs_remove_recursive(dbgfs_root);
 		dbgfs_root = NULL;
 	}
+	return 0;
 }
 
-module_init(fpga_cfg_init);
-module_exit(fpga_cfg_exit);
+static struct platform_driver fpga_cfg_dev_driver = {
+	.driver = {
+		.name   = "fpga-cfg-dev",
+	},
+	.probe = fpga_cfg_dev_probe,
+	.remove = fpga_cfg_dev_remove,
+};
 
-MODULE_ALIAS("platform:fpga-cfg");
+module_platform_driver(fpga_cfg_dev_driver);
+
+MODULE_ALIAS("platform:fpga-cfg-dev");
 MODULE_AUTHOR("Anatolij Gustschin <agust@denx.de>");
 MODULE_DESCRIPTION("FPGA configuration interface driver");
 MODULE_LICENSE("GPL v2");
