@@ -316,22 +316,6 @@ static int fpga_cfg_add_new_mgr(struct platform_device *pdev,
 	return 0;
 }
 
-static void fpga_cfg_cleanup_mgrs(void)
-{
-	struct fpga_cfg_device *cfg, *tmp_cfg;
-
-	mutex_lock(&mgr_list_lock);
-	list_for_each_entry_safe(cfg, tmp_cfg, &mgr_devs, list) {
-		pr_debug("%s: %p\n", __func__, cfg);
-		if (cfg->mgr) {
-			pr_debug("remove: '%s'\n", cfg->mgr->name);
-		}
-		list_del(&cfg->list);
-		kfree(cfg);
-	}
-	mutex_unlock(&mgr_list_lock);
-}
-
 static int fpga_cfg_create_inst(struct fpga_manager *mgr)
 {
 	struct fpga_cfg_platform_data pdata;
@@ -348,7 +332,7 @@ static int fpga_cfg_create_inst(struct fpga_manager *mgr)
 	for (i = 0; fpga_cfg_mgr_tbl[i].mgr_name; i++) {
 		name = fpga_cfg_mgr_tbl[i].mgr_name;
 		len = strlen(name);
-		pr_debug("LOOKING for [ %s ] in '%s'\n", mgr->name, fpga_cfg_mgr_tbl[i].mgr_name);
+		pr_debug("LOOKING for [ %s ] in '%s'\n", name, mgr->name);
 		if (!strncmp(name, mgr->name, len)) {
 			mgr_type = fpga_cfg_mgr_tbl[i].mgr_type;
 			found = true;
@@ -461,30 +445,11 @@ static struct pci_dev *fpga_cfg_find_cvp_dev(struct fpga_cfg_fpga_inst *inst)
 
 static char fpga_cfg_mgr_name_buf[128];
 
-static int fpga_cfg_attach(struct device *dev, void *data)
-{
-	struct fpga_manager *mgr = to_fpga_manager(dev);
-
-	/*pr_debug("%s ______________________ s\n", __func__);*/
-	/*pr_debug("attach to mgr: '%s'\n", mgr->name);*/
-	fpga_cfg_create_inst(mgr);
-	/*pr_debug("%s ______________________ e\n\n", __func__);*/
-	return 0;
-}
-
-static int fpga_cfg_attach_mgrs(struct class *class)
-{
-	return class_for_each_device(class, NULL, NULL, fpga_cfg_attach);
-}
-
 static int fpga_cfg_detach(struct device *dev, void *data)
 {
 	struct fpga_manager *mgr = to_fpga_manager(dev);
 
-	/*pr_debug("%s ______________________ s\n", __func__);*/
-	/*pr_debug("detach from mgr: '%s'\n", mgr->name);*/
 	fpga_cfg_remove_inst(mgr);
-	/*pr_debug("%s ______________________ e\n\n", __func__);*/
 	return 0;
 }
 
@@ -1770,29 +1735,9 @@ static int fpga_cfg_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int fpga_cfg_suspend(struct device *dev)
-{
-	/*fpga_cfg_cleanup_mgrs();*/
-	return 0;
-}
-
-static int fpga_cfg_resume(struct device *dev)
-{
-	return 0;
-}
-static const struct dev_pm_ops fpga_cfg_pm_ops = {
-	.suspend	= fpga_cfg_suspend,
-	.resume		= fpga_cfg_resume,
-};
-#endif
-
 static struct platform_driver fpga_cfg_driver = {
 	.driver = {
 		.name   = "fpga-cfg",
-#ifdef CONFIG_PM
-		.pm = &fpga_cfg_pm_ops,
-#endif
 	},
 	.probe = fpga_cfg_probe,
 	.remove = fpga_cfg_remove,
@@ -1838,7 +1783,6 @@ static int fpga_cfg_dev_remove(struct platform_device *pdev)
 	fpga_mgr_unregister_mgr_notifier(&fpga_mgr_notifier);
 	fpga_cfg_detach_mgrs(fpga_mgr_class);
 
-	fpga_cfg_cleanup_mgrs();
 	platform_driver_unregister(&fpga_cfg_driver);
 	fpga_mgr_class = NULL;
 
@@ -1851,9 +1795,30 @@ static int fpga_cfg_dev_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int fpga_cfg_dev_suspend(struct device *dev)
+{
+	fpga_cfg_detach_mgrs(fpga_mgr_class);
+	return 0;
+}
+
+static int fpga_cfg_dev_resume(struct device *dev)
+{
+	return 0;
+}
+
+static const struct dev_pm_ops fpga_cfg_dev_pm_ops = {
+	.suspend = fpga_cfg_dev_suspend,
+	.resume = fpga_cfg_dev_resume,
+};
+#endif
+
 static struct platform_driver fpga_cfg_dev_driver = {
 	.driver = {
 		.name   = "fpga-cfg-dev",
+#ifdef CONFIG_PM
+		.pm = &fpga_cfg_dev_pm_ops,
+#endif
 	},
 	.probe = fpga_cfg_dev_probe,
 	.remove = fpga_cfg_dev_remove,
