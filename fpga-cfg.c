@@ -206,6 +206,8 @@ static void fpga_cfg_modprobe_cleanup(struct subprocess_info *info)
 }
 
 #define MAX_MOD_ARGS	32
+/* 6 = 5 (for modprobe command and its args) + 1 (for NULL termination)  */
+#define MAX_ARGV	(6 + MAX_MOD_ARGS)
 
 char modprobe_path[] = "/sbin/modprobe";
 
@@ -224,8 +226,7 @@ static int fpga_cfg_modprobe(char *module_name, int wait,
 		NULL
 	};
 
-
-	argv = kmalloc(sizeof(char *[MAX_MOD_ARGS]), GFP_KERNEL);
+	argv = kzalloc(sizeof(char *[MAX_ARGV]), GFP_KERNEL);
 	if (!argv)
 		goto out;
 
@@ -253,21 +254,24 @@ static int fpga_cfg_modprobe(char *module_name, int wait,
 		argv[4] = NULL;
 
 		if (module_args) {
+			char *argp;
 			data->module_args = kstrdup(module_args, GFP_KERNEL);
 			if (!data->module_args)
 				goto free_module_name;
 
 			argc = 0;
-			while ((p = strsep(&data->module_args, ",")) != NULL) {
+			argp = data->module_args;
+			while ((p = strsep(&argp, ",")) != NULL) {
 				if (!*p)
 					continue;
 				argv[4 + argc] = p;
 				argc++;
-				if (argc == (MAX_MOD_ARGS - 4)) {
-					argv[4 + argc] = NULL;
+				if (argc == MAX_ARGV - 5) {
+					pr_debug("Module args count exceeded!\n");
 					break;
 				}
 			}
+			argv[4 + argc] = NULL;
 		}
 	}
 
@@ -1084,6 +1088,9 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 	inst->cfg_done = false;
 	inst->cfg_op1 = NOP_MGR;
 	inst->cfg_op2 = NOP_MGR;
+
+	strncpy(inst->fpga_drv, "fpga_mfd", sizeof(inst->fpga_drv));
+	inst->fpga_drv_args[0] = 0;
 
 	ret = fpga_cfg_desc_parse(inst, buf, size);
 	if (ret < 0)
