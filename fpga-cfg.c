@@ -185,6 +185,7 @@ struct fpga_cfg {
 	struct platform_device *pdev;
 	struct class *mgr_class;
 	struct dentry *dbgfs_devdir;
+	char dir_buf[16];
 
 	struct fpga_cfg_fpga_inst fpga;
 };
@@ -1616,10 +1617,12 @@ struct debugfs_entry entries[] = {
 
 static char target_buf[PATH_MAX];
 
-static void create_debugfs_entry(struct dentry *dir, int dev_idx, char *name)
+static void create_debugfs_entry(struct fpga_cfg *priv, int dev_idx, char *name)
 {
-	sprintf(target_buf, "/sys/devices/platform/fpga-cfg.%d/fpga%d/%s",
-		dev_idx, dev_idx, name);
+	struct dentry *dir = priv->dbgfs_devdir;
+
+	sprintf(target_buf, "/sys/devices/platform/fpga-cfg.%d/%s/%s",
+		dev_idx, priv->dir_buf, name);
 	debugfs_create_symlink(name, dir, target_buf);
 }
 
@@ -1627,10 +1630,8 @@ static void create_debugfs_entries(struct fpga_cfg *priv, int dev_idx)
 {
 	int i = 0;
 
-	while (entries[i].name) {
-		create_debugfs_entry(priv->dbgfs_devdir, dev_idx,
-				     entries[i++].name);
-	}
+	while (entries[i].name)
+		create_debugfs_entry(priv, dev_idx, entries[i++].name);
 }
 
 static int fpga_cfg_probe(struct platform_device *pdev)
@@ -1641,7 +1642,6 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 	struct fpga_manager *mgr = NULL;
 	struct fpga_cfg *priv;
 	enum fpga_cfg_mgr_type mgr_type;
-	char fname[32];
 	int ret;
 
 	pdata = dev_get_platdata(&pdev->dev);
@@ -1660,23 +1660,6 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 
 	inst = &priv->fpga;
 
-	/* Create sub-directory for fpga config interface */
-	sprintf(fname, "fpga%d", pdev->id);
-	priv->dbgfs_devdir = debugfs_create_dir(fname, dbgfs_root);
-	if (!priv->dbgfs_devdir) {
-		dev_err(&pdev->dev, "Can't create debugfs dir '%s'\n", fname);
-		return -ENOENT;
-	}
-
-	inst->dbgfs_history = debugfs_create_file("history", 0444,
-						priv->dbgfs_devdir, inst,
-						&dbgfs_history_ops);
-	if (!inst->dbgfs_history) {
-		dev_err(&pdev->dev, "Can't create debugfs history entry\n");
-		debugfs_remove(priv->dbgfs_devdir);
-		return -ENOENT;
-	}
-
 	priv->pdev = pdev;
 	platform_set_drvdata(pdev, priv);
 
@@ -1688,7 +1671,6 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 		if (IS_ERR(mgr)) {
 			dev_err(dev, "Failed getting fpga mgr '%s': %ld\n",
 				pdata->mgr->name, PTR_ERR(mgr));
-			debugfs_remove_recursive(priv->dbgfs_devdir);
 			return PTR_ERR(mgr);
 		}
 	}
@@ -1705,8 +1687,10 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 			dev_err(dev,
 				"Can't find address or usb id in mgr name: %d\n", ret);
 			ret = -EINVAL;
-			goto err0;
+			goto err_mgr;
 		}
+		snprintf(priv->dir_buf, sizeof(priv->dir_buf),
+			 "fpp_%s.%d", fpga_cfg_mgr_name_addr_buf, pdev->id);
 		dev_dbg(dev, "FPP board address: '%s'\n",
 			fpga_cfg_mgr_name_addr_buf);
 		dev_dbg(dev, "FPP manager usb id: '%s'\n",
@@ -1716,6 +1700,35 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 	if (mgr_type == SPI_RING_MGR || mgr_type == SPI_MGR) {
 		priv->fpga.spi.mgr = mgr;
 		priv->fpga.spi.mgr_dev = mgr->dev.parent;
+		ret = sscanf(mgr->name, "%s %s", fpga_cfg_mgr_name_buf,
+			     fpga_cfg_mgr_name_addr_buf);
+		if (ret != 2) {
+			dev_err(dev,
+				"Can't find device id in mgr name: %d\n", ret);
+			ret = -EINVAL;
+			goto err_mgr;
+		}
+		snprintf(priv->dir_buf, sizeof(priv->dir_buf),
+			 "spi_%s", fpga_cfg_mgr_name_addr_buf);
+	}
+
+	/* Create sub-directory for fpga config interface */
+	priv->dbgfs_devdir = debugfs_create_dir(priv->dir_buf, dbgfs_root);
+	if (!priv->dbgfs_devdir) {
+		dev_err(&pdev->dev, "Can't create debugfs dir '%s'\n",
+			priv->dir_buf);
+		ret = -ENOENT;
+		goto err_mgr;
+	}
+
+	inst->dbgfs_history = debugfs_create_file("history", 0444,
+						priv->dbgfs_devdir, inst,
+						&dbgfs_history_ops);
+	if (!inst->dbgfs_history) {
+		dev_err(&pdev->dev, "Can't create debugfs history entry\n");
+		debugfs_remove(priv->dbgfs_devdir);
+		ret = -ENOENT;
+		goto err_mgr;
 	}
 
 	priv->fpga.history_max_entries = fpgacfg_hist_len;
@@ -1728,7 +1741,7 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 
 	ret = kobject_init_and_add(&priv->fpga.kobj_fpga_dir,
 				   &fpga_cfg_ktype, &pdev->dev.kobj,
-				   "fpga%d", pdev->id);
+				   "%s", priv->dir_buf);
 	if (ret) {
 		kobject_put(&priv->fpga.kobj_fpga_dir);
 		dev_err(&pdev->dev, "Can't create sysfs entry\n");
@@ -1794,23 +1807,23 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 	}
 
 	if (priv->fpga.fpp.mgr) {
-		create_debugfs_entry(priv->dbgfs_devdir, pdev->id, "fpp");
+		create_debugfs_entry(priv, pdev->id, "fpp");
 		create_debugfs_entries(priv, pdev->id);
 	}
 
 	if (priv->fpga.spi.mgr) {
-		create_debugfs_entry(priv->dbgfs_devdir, pdev->id, "spi");
+		create_debugfs_entry(priv, pdev->id, "spi");
 		if (priv->fpga.mgr_type == SPI_MGR ||
 		    priv->fpga.mgr_type == SPI_RING_MGR) {
-			create_debugfs_entry(priv->dbgfs_devdir, pdev->id,
+			create_debugfs_entry(priv, pdev->id,
 					     entries[2].name);
-			create_debugfs_entry(priv->dbgfs_devdir, pdev->id,
+			create_debugfs_entry(priv, pdev->id,
 					     entries[3].name);
-			create_debugfs_entry(priv->dbgfs_devdir, pdev->id,
+			create_debugfs_entry(priv, pdev->id,
 					     entries[5].name);
 		}
 		if (priv->fpga.mgr_type == SPI_RING_MGR) {
-			create_debugfs_entry(priv->dbgfs_devdir, pdev->id,
+			create_debugfs_entry(priv, pdev->id,
 					     entries[0].name);
 		}
 	}
@@ -1842,6 +1855,7 @@ err1:
 	kobject_put(&priv->fpga.kobj_fpga_dir);
 err0:
 	debugfs_remove_recursive(priv->dbgfs_devdir);
+err_mgr:
 	if (mgr && (mgr_type == SPI_RING_MGR || mgr_type == SPI_MGR ||
 	    mgr_type == FPP_RING_MGR))
 		fpga_mgr_put(mgr);
