@@ -463,6 +463,7 @@ static struct pci_dev *fpga_cfg_find_cvp_dev(struct fpga_cfg_fpga_inst *inst)
 }
 
 static char fpga_cfg_mgr_name_buf[128];
+static char fpga_cfg_mgr_name_addr_buf[16];
 
 static int fpga_cfg_detach(struct device *dev, void *data)
 {
@@ -1698,14 +1699,16 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 	if (mgr_type == FPP_RING_MGR) {
 		priv->fpga.fpp.mgr = mgr;
 		priv->fpga.fpp.mgr_dev = mgr->dev.parent;
-		ret = sscanf(mgr->name, "%s %s", fpga_cfg_mgr_name_buf,
-			     priv->fpga.usb_dev_id);
-		if (ret != 2) {
+		ret = sscanf(mgr->name, "%s %s %s", fpga_cfg_mgr_name_buf,
+			     fpga_cfg_mgr_name_addr_buf, priv->fpga.usb_dev_id);
+		if (ret != 3) {
 			dev_err(dev,
-				"Can't find usb id in mgr name: %d\n", ret);
+				"Can't find address or usb id in mgr name: %d\n", ret);
 			ret = -EINVAL;
 			goto err0;
 		}
+		dev_dbg(dev, "FPP board address: '%s'\n",
+			fpga_cfg_mgr_name_addr_buf);
 		dev_dbg(dev, "FPP manager usb id: '%s'\n",
 			priv->fpga.usb_dev_id);
 	}
