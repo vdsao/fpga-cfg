@@ -1021,8 +1021,8 @@ static int fpga_cfg_op_log(struct fpga_cfg_fpga_inst *inst,
 	return ret;
 }
 
-static void pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
-			   struct pci_bus *bus, char *driver)
+static void __maybe_unused pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
+					  struct pci_bus *bus, char *driver)
 {
 	struct pci_dev *pdev;
 	unsigned int max;
@@ -1169,7 +1169,7 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 	struct fpga_manager *mgr;
 	struct cfg_desc *desc;
 	struct pci_dev *pdev;
-	struct pci_bus *bus;
+	struct pci_bus __maybe_unused *bus;
 	struct device *dev;
 	const char *start, *end;
 	struct fpga_image_info info;
