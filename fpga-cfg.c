@@ -1820,6 +1820,8 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 			create_debugfs_entry(priv, pdev->id,
 					     entries[3].name);
 			create_debugfs_entry(priv, pdev->id,
+					     entries[4].name);
+			create_debugfs_entry(priv, pdev->id,
 					     entries[5].name);
 		}
 		if (priv->fpga.mgr_type == SPI_RING_MGR) {
