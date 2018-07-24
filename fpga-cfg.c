@@ -1879,6 +1879,8 @@ static int fpga_cfg_remove(struct platform_device *pdev)
 		 __func__, pdev->id, inst->fpp.mgr, inst->spi.mgr,
 		 inst->cvp.mgr, inst->pr.mgr);
 
+	sysfs_notify(&inst->kobj_fpga_dir, NULL, "ready");
+	sysfs_notify(&inst->kobj_fpga_dir, NULL, "status");
 	fpga_cfg_free_log(inst);
 
 	if (inst->fpp.mgr) {
