@@ -1930,6 +1930,10 @@ static int fpga_cfg_dev_probe(struct platform_device *pdev)
 	if (ret)
 		pr_debug("Can't load altera-ps-spi: %d\n", ret);
 
+	ret = request_module("xilinx-spi");
+	if (ret)
+		pr_debug("Can't load xilinx-spi: %d\n", ret);
+
 	ret = request_module("altera-cvp");
 	if (ret)
 		pr_debug("Can't load altera-cvp: %d\n", ret);
