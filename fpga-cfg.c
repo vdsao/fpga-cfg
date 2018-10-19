@@ -1677,7 +1677,7 @@ static int fpga_cfg_probe(struct platform_device *pdev)
 	int ret;
 
 	pdata = dev_get_platdata(&pdev->dev);
-	if (!pdata && !pdata->mgr) {
+	if (!pdata || !pdata->mgr) {
 		dev_err(dev, "Missing fpga-cfg pdata...\n");
 		return -ENODEV;
 	}
