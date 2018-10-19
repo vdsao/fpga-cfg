@@ -1022,6 +1022,13 @@ static int fpga_cfg_op_log(struct fpga_cfg_fpga_inst *inst,
 	return ret;
 }
 
+#define PCI_DEV_ADDED	1
+
+static inline bool pci_dev_is_added(const struct pci_dev *dev)
+{
+	return test_bit(PCI_DEV_ADDED, &dev->priv_flags);
+}
+
 static void __maybe_unused pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
 					  struct pci_bus *bus, char *driver)
 {
@@ -1034,7 +1041,11 @@ static void __maybe_unused pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
 
 	list_for_each_entry(pdev, &bus->devices, bus_list) {
 		/* Skip already-added devices */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 17, 0)
+		if (pci_dev_is_added(pdev))
+#else
 		if (pdev->is_added)
+#endif
 			continue;
 
 		if (inst->debug)
@@ -1276,7 +1287,12 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 				inst_is_fpp(inst) ? "FPP" : "SPI");
 
 		/* Load ring image now */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 15, 9)
+		info.firmware_name = desc->firmware;
+		ret = fpga_mgr_load(desc->mgr, &info);
+#else
 		ret = fpga_mgr_firmware_load(desc->mgr, &info, desc->firmware);
+#endif
 		if (ret < 0) {
 			dev_warn(dev, "%s fpga_mgr failed: %d\n",
 				 inst_is_fpp(inst) ? "FPP" : "SPI", ret);
@@ -1316,7 +1332,12 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		desc = &inst->spi;
 		if (inst->debug)
 			dev_dbg(dev, "SPI cfg step start\n");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 15, 9)
+		info.firmware_name = desc->firmware;
+		ret = fpga_mgr_load(desc->mgr, &info);
+#else
 		ret = fpga_mgr_firmware_load(desc->mgr, &info, desc->firmware);
+#endif
 		if (ret < 0) {
 			dev_warn(dev, "SPI fpga_mgr failed: %d\n", ret);
 			goto err;
@@ -1351,8 +1372,13 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 				inst->pr.mgr->name);
 
 		info.flags = FPGA_MGR_PARTIAL_RECONFIG;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 15, 9)
+		info.firmware_name = inst->pr.firmware;
+		ret = fpga_mgr_load(inst->pr.mgr, &info);
+#else
 		ret = fpga_mgr_firmware_load(inst->pr.mgr, &info,
 					     inst->pr.firmware);
+#endif
 		if (ret < 0) {
 			fpga_mgr_put(inst->pr.mgr);
 			inst->pr.mgr = NULL;
@@ -1417,8 +1443,13 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		}
 
 		inst->cvp.mgr = mgr;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 15, 9)
+		info.firmware_name = inst->cvp.firmware;
+		ret = fpga_mgr_load(inst->cvp.mgr, &info);
+#else
 		ret = fpga_mgr_firmware_load(inst->cvp.mgr, &info,
 					     inst->cvp.firmware);
+#endif
 		if (ret < 0) {
 			fpga_mgr_put(mgr);
 			inst->cvp.mgr = NULL;
