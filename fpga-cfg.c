@@ -1174,11 +1174,111 @@ static inline bool inst_is_fpp(struct fpga_cfg_fpga_inst *inst)
 	return false;
 }
 
+static int fpga_cfg_do_cvp(struct fpga_cfg_fpga_inst *inst)
+{
+	struct pci_bus __maybe_unused *bus;
+	struct fpga_manager *mgr;
+	struct pci_dev *pdev;
+	struct device *dev;
+	struct fpga_image_info info;
+	int ret;
+
+	dev = &inst->cfg->pdev->dev;
+
+	memset(&info, 0, sizeof(info));
+	inst->cfg_done = false;
+	inst->driver_to_bind = NULL;
+
+	pdev = inst->pci_dev;
+	if (!pdev) {
+		pdev = fpga_cfg_find_cvp_dev(inst);
+		if (!pdev) {
+			dev_dbg(dev, "PCIe FPGA dev for CvP not found.\n");
+			return -ENODEV;
+		}
+	}
+
+	inst->cvp.mgr_dev = &pdev->dev;
+
+	mgr = fpga_mgr_get(&pdev->dev);
+	if (IS_ERR(mgr)) {
+		ret = PTR_ERR(mgr);
+		dev_err(dev, "failed getting CvP manager: %d\n", ret);
+		return ret;
+	}
+	if (inst->debug) {
+		dev_info(dev, "CvP cfg step start\n");
+		dev_info(dev, "Using CvP manager: '%s'\n", mgr->name);
+	}
+
+	inst->cvp.mgr = mgr;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 15, 9)
+	info.firmware_name = inst->cvp.firmware;
+	ret = fpga_mgr_load(inst->cvp.mgr, &info);
+#else
+	ret = fpga_mgr_firmware_load(inst->cvp.mgr, &info,
+				     inst->cvp.firmware);
+#endif
+	if (ret < 0) {
+		fpga_mgr_put(mgr);
+		inst->cvp.mgr = NULL;
+		goto err;
+	}
+	inst->cfg_seq_num += 1;
+	inst->cfg_done = true;
+	fpga_cfg_op_log(inst, &inst->cvp);
+	fpga_mgr_put(mgr);
+	inst->cvp.mgr = NULL;
+	if (inst->debug)
+		dev_info(dev, "CvP cfg step done\n");
+
+#if 0
+		/* Shouldn't be needed with working hotplug */
+		if (pdev->vendor == 0x1172 &&
+		    (pdev->device == 0xe003 || pdev->device == 0xe001)) {
+			if (inst->debug)
+				dev_dbg(dev, "Reattach CvP device\n");
+			bus = pdev->bus;
+			/* Unbind and remove the PCIe FPGA device first */
+			pci_lock_rescan_remove();
+			pci_dev_get(pdev);
+			pci_stop_and_remove_bus_device(pdev);
+			pci_dev_put(pdev);
+			pci_unlock_rescan_remove();
+
+			if (inst->debug)
+				dev_dbg(dev, "PCI bus rescan\n");
+			pci_bus_rescan(inst, bus, inst->fpga_drv);
+			if (inst->debug) {
+				dev_dbg(dev, "PCI bus rescan done\n");
+				dev_dbg(dev, "CvP device reattach done\n");
+			}
+		} else
+#endif
+	{
+		/* Detach CvP driver and bind to mfd driver */
+		pci_device_driver_unbind(&pdev->dev);
+
+		/* Load fpga driver module with custom parameters */
+		ret = fpga_cfg_modprobe(inst->fpga_drv, UMH_WAIT_PROC,
+					false, inst->fpga_drv_args);
+		if (ret < 0)
+			dev_warn(dev, "Failed to load module '%s %s': err %d\n",
+				 inst->fpga_drv, inst->fpga_drv_args, ret);
+
+		ret = pci_device_driver_bind(pdev, inst->fpga_drv);
+		if (ret)
+			dev_err(dev, "PCIe dev bind error %d\n", ret);
+	}
+	return 0;
+err:
+	return ret;
+}
+
 static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 			  struct attribute *attr,
 			  const char *buf, size_t size)
 {
-	struct fpga_manager *mgr;
 	struct cfg_desc *desc;
 	struct pci_dev *pdev;
 	struct pci_bus __maybe_unused *bus;
@@ -1272,7 +1372,11 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		 */
 		inst->pci_dev = NULL;
 		inst->cvp_bound = false;
-		inst->driver_to_bind = "altera-cvp";
+		if (inst->cfg_op2 == CVP_MGR)
+			inst->driver_to_bind = "altera-cvp";
+		else
+			inst->driver_to_bind = inst->fpga_drv;
+
 		list_add_tail(&inst->link, &pci_dev_wait_list);
 
 		if (inst->cfg_op1 == SPI_RING_MGR) {
@@ -1416,91 +1520,11 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		return size;
 	}
 
+	/* Run CvP configuration if requested */
 	if (inst->cfg_op2 == CVP_MGR) {
-		inst->cfg_done = false;
-		inst->driver_to_bind = NULL;
-		pdev = inst->pci_dev;
-		if (!pdev) {
-			pdev = fpga_cfg_find_cvp_dev(inst);
-			if (!pdev) {
-				dev_dbg(dev, "PCIe FPGA dev not found.\n");
-				ret = -ENODEV;
-				goto err;
-			}
-		}
-
-		inst->cvp.mgr_dev = &pdev->dev;
-
-		mgr = fpga_mgr_get(&pdev->dev);
-		if (IS_ERR(mgr)) {
-			ret = PTR_ERR(mgr);
-			dev_err(dev, "failed getting CvP manager: %d\n", ret);
-			return ret;
-		}
-		if (inst->debug) {
-			dev_info(dev, "CvP cfg step start\n");
-			dev_info(dev, "Using CvP manager: '%s'\n", mgr->name);
-		}
-
-		inst->cvp.mgr = mgr;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 15, 9)
-		info.firmware_name = inst->cvp.firmware;
-		ret = fpga_mgr_load(inst->cvp.mgr, &info);
-#else
-		ret = fpga_mgr_firmware_load(inst->cvp.mgr, &info,
-					     inst->cvp.firmware);
-#endif
-		if (ret < 0) {
-			fpga_mgr_put(mgr);
-			inst->cvp.mgr = NULL;
+		ret = fpga_cfg_do_cvp(inst);
+		if (ret < 0)
 			goto err;
-		}
-		inst->cfg_seq_num += 1;
-		inst->cfg_done = true;
-		fpga_cfg_op_log(inst, &inst->cvp);
-		fpga_mgr_put(mgr);
-		inst->cvp.mgr = NULL;
-		if (inst->debug)
-			dev_info(dev, "CvP cfg step done\n");
-
-#if 0
-		/* Shouldn't be needed with working hotplug */
-		if (pdev->vendor == 0x1172 &&
-		    (pdev->device == 0xe003 || pdev->device == 0xe001)) {
-			if (inst->debug)
-				dev_dbg(dev, "Reattach CvP device\n");
-			bus = pdev->bus;
-			/* Unbind and remove the PCIe FPGA device first */
-			pci_lock_rescan_remove();
-			pci_dev_get(pdev);
-			pci_stop_and_remove_bus_device(pdev);
-			pci_dev_put(pdev);
-			pci_unlock_rescan_remove();
-
-			if (inst->debug)
-				dev_dbg(dev, "PCI bus rescan\n");
-			pci_bus_rescan(inst, bus, inst->fpga_drv);
-			if (inst->debug) {
-				dev_dbg(dev, "PCI bus rescan done\n");
-				dev_dbg(dev, "CvP device reattach done\n");
-			}
-		} else
-#endif
-		{
-			/* Detach CvP driver and bind to mfd driver */
-			pci_device_driver_unbind(&pdev->dev);
-
-			/* Load fpga driver module with custom parameters */
-			ret = fpga_cfg_modprobe(inst->fpga_drv, UMH_WAIT_PROC,
-						false, inst->fpga_drv_args);
-			if (ret < 0)
-				dev_warn(dev, "Failed to load module '%s %s': err %d\n",
-					 inst->fpga_drv, inst->fpga_drv_args, ret);
-
-			ret = pci_device_driver_bind(pdev, inst->fpga_drv);
-			if (ret)
-				dev_err(dev, "PCIe dev bind error %d\n", ret);
-		}
 	}
 
 	sysfs_notify(&inst->kobj_fpga_dir, NULL, "status");
