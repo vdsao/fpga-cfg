@@ -141,7 +141,7 @@ struct fpga_cfg_fpga_inst {
 
 	struct pci_dev *pci_dev;
 	const char *driver_to_bind;
-	bool cvp_bound;
+	bool drv_bound;
 	int bus;
 	int dev;
 	int func;
@@ -1146,7 +1146,7 @@ static int pci_bus_event_notify(struct notifier_block *nb,
 	case BUS_NOTIFY_BOUND_DRIVER:
 		if (dev_waiting) {
 			list_del_init(&inst->link);
-			inst->cvp_bound = true;
+			inst->drv_bound = true;
 			inst->pci_dev = pdev;
 			wake_up(&inst->wq_bind);
 		}
@@ -1154,7 +1154,7 @@ static int pci_bus_event_notify(struct notifier_block *nb,
 	case BUS_NOTIFY_UNBOUND_DRIVER:
 		if (dev_waiting) {
 			list_del_init(&inst->link);
-			inst->cvp_bound = false;
+			inst->drv_bound = false;
 			wake_up(&inst->wq_unbind);
 		}
 		break;
@@ -1371,7 +1371,7 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		 * the periph. image implementing PCIe CvP device.
 		 */
 		inst->pci_dev = NULL;
-		inst->cvp_bound = false;
+		inst->drv_bound = false;
 		if (inst->cfg_op2 == CVP_MGR)
 			inst->driver_to_bind = "altera-cvp";
 		else
@@ -1417,7 +1417,7 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		if (inst->debug)
 			dev_dbg(dev, "Waiting for PCIe device hotplug\n");
 
-		ret = wait_event_timeout(inst->wq_bind, inst->cvp_bound,
+		ret = wait_event_timeout(inst->wq_bind, inst->drv_bound,
 					 msecs_to_jiffies(1000));
 		if (ret) {
 			if (inst->debug)
