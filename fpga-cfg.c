@@ -1404,29 +1404,33 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 			goto err;
 		}
 
-		inst->cfg_done = true;
-		inst->cfg_seq_num += 1;
-		fpga_cfg_op_log(inst, desc);
-
 		if (inst->debug) {
 			dev_dbg(dev, "%s cfg step done\n",
 				inst_is_fpp(inst) ? "FPP" : "SPI");
 
-			dev_dbg(dev, "Waiting for PCIe device hotplug\n");
 		}
+
+		inst->cfg_done = true;
+		inst->cfg_seq_num += 1;
+		fpga_cfg_op_log(inst, desc);
+
+		if (inst->debug)
+			dev_dbg(dev, "Waiting for PCIe device hotplug\n");
 
 		ret = wait_event_timeout(inst->wq_bind, inst->cvp_bound,
 					 msecs_to_jiffies(1000));
 		if (ret) {
 			if (inst->debug)
-				dev_dbg(dev, "PCIe CvP driver bound\n");
+				dev_dbg(dev, "PCIe FPGA %s, driver bound: '%s'\n",
+					dev_name(&inst->pci_dev->dev),
+					inst->pci_dev->driver->name);
 		} else {
 			if (inst->debug)
 				dev_warn(dev, "PCIe device link up timeout\n");
-			ret = pci_device_driver_bind(pdev, "altera-cvp");
+			ret = pci_device_driver_bind(pdev, inst->driver_to_bind);
 			if (ret) {
-				dev_err(dev, "Failed to bind CvP driver %d\n",
-					ret);
+				dev_err(dev, "Failed to bind '%s' driver %d\n",
+					inst->driver_to_bind, ret);
 				goto err;
 			}
 		}
