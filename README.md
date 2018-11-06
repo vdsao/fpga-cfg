@@ -467,12 +467,12 @@ $ sudo loadFpp --devNr 1 --pid-fpp --write-config"
 |*xlnx-slave-spi* | CONFIG_FPGA_MGR_XILINX_SPI|
 
 ### Driver mainlining status
-| In Mainline | Not in Mainline |
+| In Mainline | Not in Mainline yet |
 | :--- | :--- |
 |*altera-cvp*|*ft232h-intf*|
 |*altera-pr-ip-core*|*spi-ftdi-mpsse*|
 |*altera-ps-spi*|*ftdi-fifo-fpp*|
-|*xlnx-slave-spi*|*fpga-cfg* (supposed to be out-of-tree) |
+|*xlnx-slave-spi*|*fpga-cfg* (can this driver be acepted in mainline tree?) |
 
 ### FT232H based FPGA configuration adapter drivers for mainlining
 
