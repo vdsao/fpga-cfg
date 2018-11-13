@@ -207,12 +207,12 @@ $ cat /lib/firmware/config-desc-fpp
 	mfd-driver	= "fpga_mfd";
 }
 
-$ sudo dd if=/lib/firmware/config-desc-fpp of=/sys/kernel/debug/fpga_cfg/fpp_single.0/load
+$ sudo dd bs=16k if=/lib/firmware/config-desc-fpp of=/sys/kernel/debug/fpga_cfg/fpp_single.0/load
 0+1 records in
 0+1 records out
 218 bytes copied, 3.00228 s, 0.1 kB/s
 
-$ sudo dd if=/lib/firmware/config-desc-fpp of=/sys/kernel/debug/fpga_cfg/fpp_single.0/load
+$ sudo dd bs=16k if=/lib/firmware/config-desc-fpp of=/sys/kernel/debug/fpga_cfg/fpp_single.0/load
 0+1 records in
 0+1 records out
 218 bytes copied, 3.03923 s, 0.1 kB/s
@@ -244,7 +244,7 @@ When Arria-10 FPGA was configured with an image containing Altera Partial Reconf
 	part-reconf-image-meta	= "/lib/firmware/pr-a-meta.xml";
 }
 
-# dd if=/lib/firmware/config-desc-arria10-pr-a of=/sys/kernel/debug/fpga_cfg/fpp_single.0/load
+# dd bs=16k if=/lib/firmware/config-desc-arria10-pr-a of=/sys/kernel/debug/fpga_cfg/fpp_single.0/load
 0+1 records in
 0+1 records out
 
@@ -290,7 +290,7 @@ Now write the configuration description to the matching interface file:
 	spi-image-meta	= "/lib/firmware/afe_spi-meta.xml";
 }
 
-# dd if=/lib/firmware/config-desc-xlnx-spi of=/sys/kernel/debug/fpga_cfg/spi_spi1.2/load
+# dd bs=16k if=/lib/firmware/config-desc-xlnx-spi of=/sys/kernel/debug/fpga_cfg/spi_spi1.2/load
 0+1 records in
 0+1 records out
 
@@ -321,7 +321,7 @@ loading of specified FPGA driver module with custom module options:
 	mfd-driver-param = "mfd_bar_nr=7,mfd_bar_offs=0x0,i2c_enable=0,msgdma_enable=0,msgdma2_enable=0,altera_10g_enable=0";
 }
 
-# dd if=/lib/firmware/config-desc-spi-cvp of=/sys/kernel/debug/fpga_cfg/spi_spi0.1/load
+# dd bs=16k if=/lib/firmware/config-desc-spi-cvp of=/sys/kernel/debug/fpga_cfg/spi_spi0.1/load
 0+1 records in
 0+1 records out
 
