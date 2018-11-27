@@ -226,8 +226,6 @@ static int fpga_cfg_modprobe(char *module_name, int wait,
 	struct subprocess_info *info;
 	struct modprobe_data *data;
 	char **argv;
-	char *p;
-	int argc = 0;
 	static char *envp[] = {
 		"HOME=/",
 		"PATH=/sbin:/usr/sbin:/bin:/usr/bin",
@@ -261,27 +259,11 @@ static int fpga_cfg_modprobe(char *module_name, int wait,
 		argv[2] = "--";
 		argv[3] = data->module_name;
 		argv[4] = NULL;
-
-		if (module_args) {
-			char *argp;
-			data->module_args = kstrdup(module_args, GFP_KERNEL);
-			if (!data->module_args)
-				goto free_module_name;
-
-			argc = 0;
-			argp = data->module_args;
-			while ((p = strsep(&argp, ",")) != NULL) {
-				if (!*p)
-					continue;
-				argv[4 + argc] = p;
-				argc++;
-				if (argc == MAX_ARGV - 5) {
-					pr_debug("Module args count exceeded!\n");
-					break;
-				}
-			}
-			argv[4 + argc] = NULL;
-		}
+		/*
+		 * No module parameter passing needed any more here. The
+		 * parameters are now passed via platform_data to the
+		 * device instead (device specific)
+		 */
 	}
 
 	info = call_usermodehelper_setup(modprobe_path, argv, envp,
@@ -766,7 +748,8 @@ static int parse_line(const char *line, char *key, char *val)
 	char line_fmt_str[24] = "";
 	int ret;
 
-	snprintf(line_fmt_str, sizeof(line_fmt_str), "%s%ds",
+	/* Allow reading of key_values with spaces included */
+	snprintf(line_fmt_str, sizeof(line_fmt_str), "%s%d[^\n]",
 		 fmt_key_val_pfx, VAL_SZ);
 
 	ret = sscanf(line, line_fmt_str, key, val);
@@ -1063,7 +1046,27 @@ static void __maybe_unused pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
 	pdev = NULL;
 }
 
-static int pci_device_driver_bind(struct pci_dev *pdev, const char *drv_name)
+static void pci_device_pass_platform_data(struct pci_dev *pdev,
+					  struct fpga_cfg_fpga_inst *inst)
+{
+	if (inst->fpga_drv_args) {
+		char *para;
+
+		para = devm_kzalloc(&inst->cfg->pdev->dev,
+				    sizeof(inst->fpga_drv_args), GFP_KERNEL);
+		if (!para)
+			return;
+
+		dev_info(&pdev->dev,
+			 "Passing device specific module parameters\n");
+		memcpy(para, inst->fpga_drv_args, sizeof(inst->fpga_drv_args));
+		pdev->dev.platform_data = para;
+	}
+}
+
+static int pci_device_driver_bind(struct pci_dev *pdev,
+				  struct fpga_cfg_fpga_inst *inst,
+				  const char *drv_name)
 {
 	int ret;
 
@@ -1085,6 +1088,14 @@ static int pci_device_driver_bind(struct pci_dev *pdev, const char *drv_name)
 			pdev->driver_override = NULL;
 		}
 	}
+
+	/*
+	 * Pass configuration data to the fpga-mfd device as platform_data.
+	 * This data is devices specific (can be different for multiple
+	 * FPGAs in one system) and therefore it can't be handled correctly
+	 * as normal driver module parameter.
+	 */
+	pci_device_pass_platform_data(pdev, inst);
 
 	ret = device_attach(&pdev->dev);
 
@@ -1141,6 +1152,7 @@ static int pci_bus_event_notify(struct notifier_block *nb,
 				kfree(pdev->driver_override);
 			pdev->driver_override = kstrdup(inst->driver_to_bind,
 							GFP_KERNEL);
+			pci_device_pass_platform_data(pdev, inst);
 		}
 		break;
 	case BUS_NOTIFY_BOUND_DRIVER:
@@ -1266,7 +1278,7 @@ static int fpga_cfg_do_cvp(struct fpga_cfg_fpga_inst *inst)
 			dev_warn(dev, "Failed to load module '%s %s': err %d\n",
 				 inst->fpga_drv, inst->fpga_drv_args, ret);
 
-		ret = pci_device_driver_bind(pdev, inst->fpga_drv);
+		ret = pci_device_driver_bind(pdev, inst, inst->fpga_drv);
 		if (ret)
 			dev_err(dev, "PCIe dev bind error %d\n", ret);
 	}
@@ -1427,7 +1439,8 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 		} else {
 			if (inst->debug)
 				dev_warn(dev, "PCIe device link up timeout\n");
-			ret = pci_device_driver_bind(pdev, inst->driver_to_bind);
+			ret = pci_device_driver_bind(pdev, inst,
+						     inst->driver_to_bind);
 			if (ret) {
 				dev_err(dev, "Failed to bind '%s' driver %d\n",
 					inst->driver_to_bind, ret);
