@@ -147,7 +147,7 @@ Following key options are defined (parsed in the driver):
 | *part-reconf-image* | full path to an RBF file used for partial reconfiguration|
 | *part-reconf-image-meta* | full path to a file containing the meta information for partial reconfiguration (only used for logging in configuration history)|
 | *mfd-driver* | a string specifying the FPGA MFD driver to be bound to the PCIe FPGA device after an FPP or CvP configuration|
-| *mfd-driver-param* | a string containing module parameters for loading the driver specified by *mfd-driver* option. This module parameter string must contain all module parameters separated by comma, e.g.: *mfd-driver-param = "mfd_bar_nr=7,mfd_bar_offs=0x12000057,i2c_irq_nr=10"*|
+| *mfd-driver-param* | a string containing module parameters for loading the driver specified by *mfd-driver* option. This module parameter string must contain all module parameters separated by space, e.g.: *mfd-driver-param = "mfd_bar_nr=1 mfd_bar_offs=0x00000000"*|
 
 ### Example for configuration via FPP
 After connecting a PRAX RevA. board the needed drivers should be loaded automatically. Check them by running lsmod:
@@ -318,7 +318,7 @@ loading of specified FPGA driver module with custom module options:
 	spi-image-meta	= "/lib/firmware/spi-meta.xml";
 	cvp-image-meta	= "/lib/firmware/cvp-meta.xml";
 	mfd-driver	= "fpga_mfd";
-	mfd-driver-param = "mfd_bar_nr=7,mfd_bar_offs=0x0,i2c_enable=0,msgdma_enable=0,msgdma2_enable=0,altera_10g_enable=0";
+	mfd-driver-param = "mfd_bar_nr=1 mfd_bar_offs=0x0 msgdma_enable=0 msgdma2_enable=0 altera_10g_enable=0";
 }
 
 # dd bs=16k if=/lib/firmware/config-desc-spi-cvp of=/sys/kernel/debug/fpga_cfg/spi_spi0.1/load
