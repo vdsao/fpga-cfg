@@ -1049,10 +1049,16 @@ static void __maybe_unused pci_bus_rescan(struct fpga_cfg_fpga_inst *inst,
 static void pci_device_pass_platform_data(struct pci_dev *pdev,
 					  struct fpga_cfg_fpga_inst *inst)
 {
+	/*
+	 * Pass configuration data to the fpga-mfd device as platform_data.
+	 * This data is devices specific (can be different for multiple
+	 * FPGAs in one system) and therefore it can't be handled correctly
+	 * as normal driver module parameter.
+	 */
 	if (inst->fpga_drv_args) {
 		char *para;
 
-		para = devm_kzalloc(&inst->cfg->pdev->dev,
+		para = devm_kzalloc(&pdev->dev,
 				    sizeof(inst->fpga_drv_args), GFP_KERNEL);
 		if (!para)
 			return;
@@ -1088,14 +1094,6 @@ static int pci_device_driver_bind(struct pci_dev *pdev,
 			pdev->driver_override = NULL;
 		}
 	}
-
-	/*
-	 * Pass configuration data to the fpga-mfd device as platform_data.
-	 * This data is devices specific (can be different for multiple
-	 * FPGAs in one system) and therefore it can't be handled correctly
-	 * as normal driver module parameter.
-	 */
-	pci_device_pass_platform_data(pdev, inst);
 
 	ret = device_attach(&pdev->dev);
 
@@ -1148,11 +1146,24 @@ static int pci_bus_event_notify(struct notifier_block *nb,
 	switch (action) {
 	case BUS_NOTIFY_BIND_DRIVER:
 		if (dev_waiting && inst->driver_to_bind) {
+			const char *drv_name;
+
 			if (pdev->driver_override)
 				kfree(pdev->driver_override);
 			pdev->driver_override = kstrdup(inst->driver_to_bind,
 							GFP_KERNEL);
-			pci_device_pass_platform_data(pdev, inst);
+			/*
+			 * Pass platform_data only if the probing driver name
+			 * matches to the configured driver name. This check
+			 * is needed because kernel tries binding to other PCI
+			 * drivers, e.g. altera-cvp. We must pass platform data
+			 * only for drivers configured in the description.
+			 */
+			drv_name = dev_driver_string(&pdev->dev);
+			if (drv_name &&
+			    !strncmp(drv_name, inst->fpga_drv,
+				     sizeof(inst->fpga_drv)))
+				pci_device_pass_platform_data(pdev, inst);
 		}
 		break;
 	case BUS_NOTIFY_BOUND_DRIVER:
@@ -1278,6 +1289,8 @@ static int fpga_cfg_do_cvp(struct fpga_cfg_fpga_inst *inst)
 			dev_warn(dev, "Failed to load module '%s %s': err %d\n",
 				 inst->fpga_drv, inst->fpga_drv_args, ret);
 
+		inst->driver_to_bind = inst->fpga_drv;
+		list_add_tail(&inst->link, &pci_dev_wait_list);
 		ret = pci_device_driver_bind(pdev, inst, inst->fpga_drv);
 		if (ret)
 			dev_err(dev, "PCIe dev bind error %d\n", ret);
@@ -1371,12 +1384,6 @@ static ssize_t store_load(struct fpga_cfg_fpga_inst *inst,
 				dev_dbg(dev,
 					"No FPGA yet. Loading periph. image\n");
 		}
-
-		/* Remove fpga driver module */
-		ret = fpga_cfg_modprobe(inst->fpga_drv, UMH_WAIT_PROC, true, NULL);
-		if (ret < 0)
-			dev_warn(dev, "Failed to unload module '%s'\n",
-				 inst->fpga_drv);
 
 		/*
 		 * There is no FPGA user anymore, now we can start loading
