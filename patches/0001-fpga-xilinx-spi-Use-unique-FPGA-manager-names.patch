@@ -1,0 +1,46 @@
+From 88f79aa6e5c9ba6aa16545cb759d224d6608c94e Mon Sep 17 00:00:00 2001
+From: Anatolij Gustschin <agust@denx.de>
+Date: Sat, 21 Jul 2018 14:11:25 +0200
+Subject: [PATCH 1/9] fpga: xilinx-spi: Use unique FPGA manager names
+
+Currently we have the same FPGA manager name for all registered
+xlnx-slave-spi managers, so it is not clear which fpga manager
+index belongs to which configuration interface (SPI slave device).
+Use unique fpga manager name for each registered manager. With
+this change we have names with SPI slave device name encoded in
+the manager name string, e.g. like "xlnx-slave-spi spi1.2".
+
+Signed-off-by: Anatolij Gustschin <agust@denx.de>
+---
+ drivers/fpga/xilinx-spi.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/fpga/xilinx-spi.c b/drivers/fpga/xilinx-spi.c
+index 469486be20c4..34b13d1c0f88 100644
+--- a/drivers/fpga/xilinx-spi.c
++++ b/drivers/fpga/xilinx-spi.c
+@@ -27,6 +27,7 @@ struct xilinx_spi_conf {
+ 	struct spi_device *spi;
+ 	struct gpio_desc *prog_b;
+ 	struct gpio_desc *done;
++	char mgr_name[64];
+ };
+ 
+ static enum fpga_mgr_states xilinx_spi_state(struct fpga_manager *mgr)
+@@ -166,8 +167,11 @@ static int xilinx_spi_probe(struct spi_device *spi)
+ 		return PTR_ERR(conf->done);
+ 	}
+ 
+-	mgr = devm_fpga_mgr_create(&spi->dev,
+-				   "Xilinx Slave Serial FPGA Manager",
++	/* Register manager with unique name */
++	snprintf(conf->mgr_name, sizeof(conf->mgr_name), "%s %s",
++		 dev_driver_string(&spi->dev), dev_name(&spi->dev));
++
++	mgr = devm_fpga_mgr_create(&spi->dev, conf->mgr_name,
+ 				   &xilinx_spi_ops, conf);
+ 	if (!mgr)
+ 		return -ENOMEM;
+-- 
+2.17.1
+

@@ -1,0 +1,98 @@
+From 981ca81888aa4c04b057aedd1718bfe44a9261e2 Mon Sep 17 00:00:00 2001
+From: Anatolij Gustschin <agust@denx.de>
+Date: Fri, 16 Feb 2018 18:05:33 +0100
+Subject: [PATCH 3/9] fpga: add static platform device for autoloading fpga-cfg
+ driver
+
+fpga-cfg driver should always be loaded automatically, so we add
+a simple platform device for binding to fpga-cfg driver. The
+fpga-cfg interface driver can be adapted to auto-load for this
+device: init/exit module code will be moved to probe/remove
+callbacks for the "fpga-cfg-dev" driver.
+
+Signed-off-by: Anatolij Gustschin <agust@denx.de>
+---
+ drivers/Makefile                     |  1 +
+ drivers/fpga/Kconfig                 |  9 +++++++++
+ drivers/fpga/fpga-cfg/Makefile       |  3 +++
+ drivers/fpga/fpga-cfg/fpga-cfg-dev.c | 26 ++++++++++++++++++++++++++
+ 4 files changed, 39 insertions(+)
+ create mode 100644 drivers/fpga/fpga-cfg/Makefile
+ create mode 100644 drivers/fpga/fpga-cfg/fpga-cfg-dev.c
+
+diff --git a/drivers/Makefile b/drivers/Makefile
+index 578f469f72fb..93ce03d82540 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -180,6 +180,7 @@ obj-$(CONFIG_STM)		+= hwtracing/stm/
+ obj-$(CONFIG_ANDROID)		+= android/
+ obj-$(CONFIG_NVMEM)		+= nvmem/
+ obj-$(CONFIG_FPGA)		+= fpga/
++obj-$(CONFIG_FPGA_CFG_DEV)	+= fpga/fpga-cfg/
+ obj-$(CONFIG_FSI)		+= fsi/
+ obj-$(CONFIG_TEE)		+= tee/
+ obj-$(CONFIG_MULTIPLEXER)	+= mux/
+diff --git a/drivers/fpga/Kconfig b/drivers/fpga/Kconfig
+index 1ebcef4bab5b..205042b441ea 100644
+--- a/drivers/fpga/Kconfig
++++ b/drivers/fpga/Kconfig
+@@ -11,6 +11,15 @@ menuconfig FPGA
+ 
+ if FPGA
+ 
++config FPGA_CFG_DEV
++	bool "FPGA cfg device registration for fpga-cfg module autoload"
++	default y
++	help
++	  Say Y here if you want to use fpga-cfg driver for userspace
++	  configuration interface for FPGA Manager framework. This will
++	  register appropriate platform device for automatic fpga-cfg
++	  driver loading.
++
+ config FPGA_MGR_SOCFPGA
+ 	tristate "Altera SOCFPGA FPGA Manager"
+ 	depends on ARCH_SOCFPGA || COMPILE_TEST
+diff --git a/drivers/fpga/fpga-cfg/Makefile b/drivers/fpga/fpga-cfg/Makefile
+new file mode 100644
+index 000000000000..faf062a44366
+--- /dev/null
++++ b/drivers/fpga/fpga-cfg/Makefile
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: GPL-2.0
++#
++obj-y	+= fpga-cfg-dev.o
+diff --git a/drivers/fpga/fpga-cfg/fpga-cfg-dev.c b/drivers/fpga/fpga-cfg/fpga-cfg-dev.c
+new file mode 100644
+index 000000000000..32ed4ff3b027
+--- /dev/null
++++ b/drivers/fpga/fpga-cfg/fpga-cfg-dev.c
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * FPGA cfg device instantiation for fpga-cfg driver autoload
++ *
++ * Copyright (C) 2018 DENX Software Engineering
++ * Anatolij Gustschin <agust@denx.de>
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/platform_device.h>
++
++static int __init fpga_cfg_loader_init(void)
++{
++	static struct platform_device *pdev;
++
++	pdev = platform_device_register_simple("fpga-cfg-dev",
++						PLATFORM_DEVID_NONE, NULL, 0);
++	if (IS_ERR(pdev)) {
++		pr_err("Can't register platform device: %ld\n", PTR_ERR(pdev));
++		return PTR_ERR(pdev);
++	}
++
++	return 0;
++}
++subsys_initcall(fpga_cfg_loader_init);
+-- 
+2.17.1
+
