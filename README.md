@@ -420,10 +420,10 @@ Figure 1 shows a summary with simplified device connection diagram and low-level
 ```
 
 
-The *fpga-cfg* driver uses various low-level drivers for Linux FPGA Manager framework (fpga-mgr). The required low-level fpga-mgr drivers can be found [here](http://git.denx.de/?p=linux-denx/linux-denx-agust.git;a=tree;f=drivers/fpga;h=d14d8f8dd663845b5fbe9b4ae8be69156f9e6054;hb=refs/heads/fpga "low-level fpga-mgr drivers"). We use following FPGA manager drivers: altera-cvp.c (CvP configuration), altera-pr-ip-core.c (Partial Reconfiguration), altera-ps-spi.c (PS-SPI configuration), ftdi-fifo-fpp.c (FPP configuration).
+The *fpga-cfg* driver uses various low-level drivers for Linux FPGA Manager framework (fpga-mgr). The required low-level fpga-mgr drivers can be found [here](http://git-old.denx.de/?p=linux-denx/linux-denx-agust.git;a=tree;f=drivers/fpga;h=d14d8f8dd663845b5fbe9b4ae8be69156f9e6054;hb=refs/heads/fpga "low-level fpga-mgr drivers"). We use following FPGA manager drivers: altera-cvp.c (CvP configuration), altera-pr-ip-core.c (Partial Reconfiguration), altera-ps-spi.c (PS-SPI configuration), ftdi-fifo-fpp.c (FPP configuration).
 
-Additional changes [1](http://git.denx.de/?p=linux-denx/linux-denx-agust.git;a=commit;h=b67a7990b487b458dd223046269bf51309387454 "patch1") to the FPGA manager framework are required for *fpga-cfg* driver to build and work as expected.  
-To enable auto-loading *fpga-cfg* module the kernel should contain following patch: [2](http://git.denx.de/?p=linux-denx/linux-denx-agust.git;a=commit;h=2758da9cc84bb8e80be914850609d6ee657000f1 "patch2").
+Additional changes [1](http://git-old.denx.de/?p=linux-denx/linux-denx-agust.git;a=commit;h=b67a7990b487b458dd223046269bf51309387454 "patch1") to the FPGA manager framework are required for *fpga-cfg* driver to build and work as expected.  
+To enable auto-loading *fpga-cfg* module the kernel should contain following patch: [2](http://git-old.denx.de/?p=linux-denx/linux-denx-agust.git;a=commit;h=2758da9cc84bb8e80be914850609d6ee657000f1 "patch2").
 
 Some remarks about the drivers in above diagram
 
